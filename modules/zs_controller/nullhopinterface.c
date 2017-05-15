@@ -11,7 +11,6 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
-
 struct nullhopwrapper_state {
 	uint32_t *integertest;
 	char * file_to_classify;
@@ -80,7 +79,8 @@ static void caerNullHopWrapperRun(caerModuleData moduleData, size_t argsNumber,
 			"detThreshold");
 
 	if(haveimg[0] == true){
-		result[0] = zs_driver_classify_image(state->cpp_class, imagestreamer_hists);
+
+		result[0] = zs_driver_classify_image(state->cpp_class, imagestreamer_hists) + 1;
 	}
 
 	return;

@@ -1,14 +1,14 @@
 /*
- * backgroundactivityfilter.c
+ * arduino control via serial port
  *
- *  Created on: Jan 20, 2014
- *      Author: chtekk
+ *  Created on: Nov 2016
+ *      Author: federico.corradi@inilabs.com
  */
 
 #include "arduinocnt.h"
 #include "base/mainloop.h"
 #include "base/module.h"
-#include "ext/ringbuffer/ringbuffer.h"
+//#include "ext/ringbuffer/ringbuffer.h"
 
 #include "arduino-serial-lib.h"
 
@@ -21,8 +21,8 @@
 #define ROCK 3
 #define PAPER 1
 #define SCISSORS 2
-#define BACKGROUND 4
-#define AVERAGEOVER 5
+#define BACKGROUND 4	//network output unit number one based (starting from one)
+#define AVERAGEOVER 1
 
 struct ASFilter_state {
 	int fd;
@@ -31,7 +31,9 @@ struct ASFilter_state {
 	char * serialPort;
 	thrd_t majorityThread;
 	atomic_bool running;
-	RingBuffer dataTransfer;
+	uint16_t pos;
+	uint16_t lastcommand;
+	atomic_int_fast32_t decision[AVERAGEOVER];
 };
 
 typedef struct ASFilter_state *ASFilterState;
@@ -51,7 +53,7 @@ static struct caer_module_functions caerArduinoCNTFunctions = { .moduleInit =
 		&caerArduinoCNTConfig, .moduleExit = &caerArduinoCNTExit, .moduleReset =
 		&caerArduinoCNTReset };
 
-void caerArduinoCNT(uint16_t moduleID, int result) {
+void caerArduinoCNT(uint16_t moduleID, int result, bool *haveimage) {
 	caerModuleData moduleData = caerMainloopFindModule(moduleID, "ArduinoCNT",
 			PROCESSOR);
 	if (moduleData == NULL) {
@@ -59,65 +61,68 @@ void caerArduinoCNT(uint16_t moduleID, int result) {
 	}
 
 	caerModuleSM(&caerArduinoCNTFunctions, moduleData,
-			sizeof(struct ASFilter_state), 1, result);
+			sizeof(struct ASFilter_state), 2, result, haveimage);
 }
 
 int majorityThread(void *ASFilter_state) {
+
 	if (ASFilter_state == NULL) {
 		return (thrd_error);
 	}
 
 	ASFilterState state = ASFilter_state;
 
-	int decisions[AVERAGEOVER];
-	for(size_t i=0; i < 5; i++){
-		decisions[i] = BACKGROUND;
-	}
-
-
 	thrd_set_name("ArduinoCNTThread");
 
 	while (atomic_load_explicit(&state->running, memory_order_relaxed)) {
 		/*do majority voting*/
 
-		int tmp = ringBufferGet(state->dataTransfer);
-		if (tmp == 0) {
-			;
-		} else {
-			for (size_t i = 0; i < AVERAGEOVER - 1; i++) {
-				decisions[i] = decisions[i + 1];
+		for (size_t i = 0; i < AVERAGEOVER; i++) {
+			atomic_load(&state->decision[i]);
+		}
+		int paper = 0;
+		int rock = 0;
+		int scissors = 0;
+		int back =0;
+		for (size_t i = 0; i < AVERAGEOVER; i++) {
+			if (state->decision[i] == PAPER) {
+				paper++;
+			} else if (state->decision[i] == SCISSORS) {
+				scissors++;
+			} else if (state->decision[i] == ROCK) {
+				rock++;
+			} else if (state->decision[i] == BACKGROUND) {
+				back++;
 			}
-			decisions[0] = tmp;
-			int paper, rock, scissors, back;
-			for (size_t i = 0; i < AVERAGEOVER; i++) {
-				if (decisions[i] == PAPER) {
-					paper++;
-				} else if (decisions[i] == SCISSORS) {
-					scissors++;
-				} else if (decisions[i] == ROCK) {
-					rock++;
-				} else if (decisions[i] == BACKGROUND) {
-					back++;
-				}
-			}
-			char res;
-			if( (rock > paper) && (rock > scissors) && (rock > back) ){
-				/*play rock*/
-				sprintf(res, "%d", ROCK);
-				serialport_write(state->fd, res);
-			}else if( (back > paper) && (back > scissors) && (back > rock) ){
-				/*play back*/
-				sprintf(res, "%d", BACKGROUND);
-				serialport_write(state->fd, res);
-			}else if( (scissors > paper) && (scissors > rock) && (scissors > back) ){
-				/*play scissors*/
-				sprintf(res, "%d", SCISSORS);
-				serialport_write(state->fd, res);
-			}else if( (paper > scissors) && (paper > rock) && (paper > back) ){
-				/*play paper*/
-				sprintf(res, "%d", PAPER);
-				serialport_write(state->fd, res);
-			}
+		}
+
+		char res[20];
+		int16_t current_dec;
+		if ((rock > paper) && (rock > scissors) && (rock > back)) {
+			/*play rock*/
+			sprintf(res, "%d", ROCK);
+			current_dec = ROCK;
+		} else if ((back > paper) && (back > scissors) && (back > rock)) {
+			/*play back*/
+			sprintf(res, "%d", BACKGROUND);
+			current_dec = BACKGROUND;
+		} else if ((scissors > paper) && (scissors > rock)
+				&& (scissors > back)) {
+			/*play scissors*/
+			sprintf(res, "%d", SCISSORS);
+			current_dec = SCISSORS;
+		} else if ((paper > scissors) && (paper > rock) && (paper > back)) {
+			/*play paper*/
+			sprintf(res, "%d", PAPER);
+			current_dec = PAPER;
+		}else{
+			current_dec = state->lastcommand;
+		}
+		if(current_dec != state->lastcommand){
+
+			caerLog(CAER_LOG_DEBUG, "ArduinoCNT", "####################### sending to arduino %d\n\n", current_dec);
+			serialport_write(state->fd, res);
+			state->lastcommand = current_dec;
 		}
 	}
 
@@ -150,21 +155,24 @@ static bool caerArduinoCNTInit(caerModuleData moduleData) {
 	}
 	serialport_flush(state->fd);
 
-	state->dataTransfer = ringBufferInit(5);
-	if (state->dataTransfer == NULL) {
-		caerLog(CAER_LOG_ERROR, moduleData->moduleSubSystemString,
-				"ringbuffer failed to initialize");
-		return (NULL);
+	atomic_store(&state->pos, 0);
+	for (size_t i = 0; i < AVERAGEOVER; i++) {
+		atomic_store(&state->decision[i], BACKGROUND);
 	}
+	state->lastcommand = BACKGROUND;
+	state->pos = 0;
 
 	//start thread for arm control
 	if (thrd_create(&state->majorityThread, &majorityThread, state)
 			!= thrd_success) {
-		ringBufferFree(state->dataTransfer);
+		//ringBufferFree(state->dataTransfer);
 		caerLog(CAER_LOG_ERROR, moduleData->moduleSubSystemString,
 				"Majority voting thread failed to initialize");
-		return (NULL);
+		exit (false);
+	}else{
+		atomic_store(&state->running,true);
 	}
+
 
 	// Nothing that can fail here.
 	return (true);
@@ -176,14 +184,19 @@ static void caerArduinoCNTRun(caerModuleData moduleData, size_t argsNumber,
 
 	// Interpret variable arguments (same as above in main function).
 	int * result = va_arg(args, int*);
+	bool *haveimage = va_arg(args, bool*);
 
 	ASFilterState state = moduleData->moduleState;
 
-	if (result[0] != NULL) {
-		if (!ringBufferPut(state->dataTransfer, result[0])) {
-			caerLog(CAER_LOG_INFO, moduleData->moduleSubSystemString,
-					"Dropped decision because ringbuffer full");
+	if (haveimage[0]) {
+
+		atomic_store(&state->decision[state->pos], result[0]);
+		if (state->pos == AVERAGEOVER) {
+			state->pos = 0;
+		} else {
+			state->pos = state->pos + 1;
 		}
+
 	}
 
 }
