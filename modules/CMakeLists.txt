@@ -1,7 +1,6 @@
 # Add all modules
 ADD_SUBDIRECTORY(backgroundactivityfilter)
 ADD_SUBDIRECTORY(caffeinterface)
-ADD_SUBDIRECTORY(nullhopinterface)
 ADD_SUBDIRECTORY(cameracalibration)
 ADD_SUBDIRECTORY(frameenhancer)
 ADD_SUBDIRECTORY(imagegenerator)
@@ -12,6 +11,7 @@ ADD_SUBDIRECTORY(statistics)
 ADD_SUBDIRECTORY(visualizer)
 ADD_SUBDIRECTORY(poseestimation)
 ADD_SUBDIRECTORY(arduinocnt)
+ADD_SUBDIRECTORY(zs_controller)
 
 # Support private modules that don't get considered for commit,
 # by reserving a directory called PrivateModules with its own
